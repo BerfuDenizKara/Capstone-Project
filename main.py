@@ -6,6 +6,7 @@ import openai
 from pysrt import SubRipFile, SubRipItem, SubRipTime
 from openai import OpenAI
 from dotenv import load_dotenv
+from pydub import AudioSegment
 
 # Load environment variables
 load_dotenv()
@@ -15,6 +16,20 @@ client = OpenAI()
 
 # Ensure temp directory exists
 os.makedirs("temp", exist_ok=True)
+
+# Function to preprocess audio
+def preprocess_audio(audio_file):
+    audio = AudioSegment.from_wav(audio_file)
+    
+    # Normalize audio
+    audio = audio.normalize()
+    
+    # Apply noise reduction (this is a simple high-pass filter, you might want to use a more sophisticated method)
+    audio = audio.high_pass_filter(100)
+    
+    preprocessed_file = audio_file.replace('.wav', '_preprocessed.wav')
+    audio.export(preprocessed_file, format="wav")
+    return preprocessed_file
 
 # Function to convert video to audio
 def video_to_audio(video_file):
@@ -26,8 +41,33 @@ def video_to_audio(video_file):
 # Function to transcribe audio using Whisper
 def transcribe_audio(audio_file):
     model = whisper.load_model("base")
-    result = model.transcribe(audio_file)
-    return result["segments"]
+    
+    # Load audio file
+    audio = AudioSegment.from_wav(audio_file)
+    
+    # Split audio into 30-second segments
+    segment_length = 30 * 1000  # 30 seconds in milliseconds
+    segments = []
+    for i in range(0, len(audio), segment_length):
+        segment = audio[i:i+segment_length]
+        segment_file = f"temp/segment_{i//segment_length}.wav"
+        segment.export(segment_file, format="wav")
+        segments.append(segment_file)
+    
+    # Transcribe each segment
+    transcribed_segments = []
+    for i, segment in enumerate(segments):
+        result = model.transcribe(segment)
+        for seg in result["segments"]:
+            seg["start"] += i * 30  # Adjust start time based on segment
+            seg["end"] += i * 30    # Adjust end time based on segment
+        transcribed_segments.extend(result["segments"])
+    
+    # Clean up temporary segment files
+    for segment in segments:
+        os.remove(segment)
+    
+    return transcribed_segments
 
 # Function to create SRT file
 def create_srt(segments, filename):
@@ -45,11 +85,26 @@ def translate_text(text, target_lang):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": f"You are a very helpful and talented translator who can translate any text to any language. You know every language like it is your native language. Your job is to translate the given text to {target_lang}. Please do not translate it word by word, but rather focus on conveying the meaning of the text in a way that is natural and fluent for a native speaker of the target language."},
+            {"role": "system", "content": f"You are an expert in translation who can translate any text to any desired language. Translate the following text to {target_lang}. Dont translate word by word but translate the whole sentence. Don't add your comments, just translate the text."},
             {"role": "user", "content": text}
         ]
     )
     return response.choices[0].message.content
+
+# Function to format timestamp
+def format_timestamp(seconds):
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+# Function to display timestamped text
+def display_timestamped_text(segments):
+    text = ""
+    for segment in segments:
+        start_time = format_timestamp(segment['start'])
+        end_time = format_timestamp(segment['end'])
+        text += f"[{start_time} - {end_time}] {segment['text']}\n\n"
+    return text
 
 # Streamlit app
 def main():
@@ -96,24 +151,34 @@ def main():
                     # Convert video to audio
                     audio_file = video_to_audio(video_path)
 
+                    # Preprocess audio
+                    preprocessed_audio = preprocess_audio(audio_file)
+
                     # Transcribe audio
-                    segments = transcribe_audio(audio_file)
+                    segments = transcribe_audio(preprocessed_audio)
 
                     # Create original SRT file
                     original_srt = os.path.join("temp", "original.srt")
                     create_srt(segments, original_srt)
 
-                    # Display original transcript
+                    # Display original transcript with timestamps and allow editing
                     st.subheader("📜 Original Transcript")
-                    full_transcript = " ".join([segment['text'] for segment in segments])
-                    st.text_area("", full_transcript, height=200)
+                    edited_transcript = st.text_area("Edit the transcript if needed:", display_timestamped_text(segments), height=400)
+
+                    # Update segments with edited transcript
+                    edited_segments = []
+                    for segment, edited_line in zip(segments, edited_transcript.split('\n\n')):
+                        if edited_line.strip():
+                            time_range, text = edited_line.split(']')
+                            segment['text'] = text.strip()
+                            edited_segments.append(segment)
 
                     # Translate and create SRT for each selected language
                     for lang in selected_languages:
                         native_name = lang.split(' (')[0]
                         english_name = lang.split(' (')[1][:-1]  # Remove the closing parenthesis
                         translated_segments = []
-                        for segment in segments:
+                        for segment in edited_segments:
                             translated_text = translate_text(segment['text'], english_name)
                             translated_segments.append({
                                 'start': segment['start'],
@@ -123,10 +188,9 @@ def main():
                         translated_srt = os.path.join("temp", f"{english_name.lower().replace(' ', '_')}.srt")
                         create_srt(translated_segments, translated_srt)
 
-                        # Display translated transcript
+                        # Display translated transcript with timestamps
                         st.subheader(f"🌟 {native_name} Translation")
-                        full_translated_text = " ".join([segment['text'] for segment in translated_segments])
-                        st.text_area("", full_translated_text, height=200)
+                        st.text_area("", display_timestamped_text(translated_segments), height=400)
 
                         # Download button for translated SRT
                         with open(translated_srt, "rb") as file:
@@ -140,6 +204,7 @@ def main():
                     # Clean up temporary files
                     os.remove(video_path)
                     os.remove(audio_file)
+                    os.remove(preprocessed_audio)
                     os.remove(original_srt)
                     for lang in selected_languages:
                         english_name = lang.split(' (')[1][:-1]
@@ -155,10 +220,11 @@ def main():
     2. 🌍 Select one or more languages for translation from the dropdown menu.
     3. 🚀 Click the "Process Video" button to start the translation process.
     4. ⏳ Wait for the processing to complete. This may take a few minutes depending on the video length.
-    5. 👀 Review the original transcript and translations in the text areas provided.
-    6. 💾 Download the SRT files for each language using the download buttons.
+    5. 📝 Review and edit the original transcript if needed.
+    6. 👀 Review the translations in the text areas provided.
+    7. 💾 Download the SRT files for each language using the download buttons.
 
-    📢 Note: This app uses advanced AI models (OpenAI's GPT-4) for transcription and translation, ensuring high-quality results across a wide range of languages. It's like having a polyglot genius at your fingertips! 🧠✨
+    📢 Note: This app uses advanced AI models for transcription and translation, ensuring high-quality results across a wide range of languages. It's like having a polyglot genius at your fingertips! 🧠✨
     """)
 
 if __name__ == "__main__":
