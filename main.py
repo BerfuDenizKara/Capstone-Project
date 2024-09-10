@@ -3,7 +3,7 @@ import os
 import subprocess
 import whisper
 import openai
-from pysrt import SubRipFile, SubRipItem
+from pysrt import SubRipFile, SubRipItem, SubRipTime
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -27,14 +27,16 @@ def video_to_audio(video_file):
 def transcribe_audio(audio_file):
     model = whisper.load_model("base")
     result = model.transcribe(audio_file)
-    return result["text"]
+    return result["segments"]
 
 # Function to create SRT file
-def create_srt(transcript, filename):
+def create_srt(segments, filename):
     srt = SubRipFile()
-    lines = transcript.split('. ')
-    for i, line in enumerate(lines):
-        item = SubRipItem(i+1, start=i*5, end=(i+1)*5, text=line)
+    for i, segment in enumerate(segments):
+        start = SubRipTime(seconds=segment['start'])
+        end = SubRipTime(seconds=segment['end'])
+        text = segment['text']
+        item = SubRipItem(i+1, start=start, end=end, text=text)
         srt.append(item)
     srt.save(filename)
 
@@ -43,7 +45,7 @@ def translate_text(text, target_lang):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": f"You are a very helpful and talented translator who can translate all languages and srt files. Translate the following text to {target_lang}."},
+            {"role": "system", "content": f"You are a very helpful and talented translator who can translate any text to any language. You know every language like it is your native language. Your job is to translate the given text to {target_lang}. Please do not translate it word by word, but rather focus on conveying the meaning of the text in a way that is natural and fluent for a native speaker of the target language."},
             {"role": "user", "content": text}
         ]
     )
@@ -55,31 +57,37 @@ def main():
 
     st.title("🎥🌐 Video Translation App")
     st.markdown("""
-    Welcome to the Video Translation App! This tool allows you to:
-    1. Upload a video file
-    2. Choose languages for translation
-    3. Get transcriptions and translations in SRT format
+    Welcome to the Video Translation App! 🚀 This magical tool allows you to:
+    1. 📤 Upload a video file
+    2. 🌍 Choose languages for translation
+    3. 📝 Get transcriptions and translations in SRT format
     
-    Simply follow the steps below to get started!
+    Simply follow the steps below to get started! Let's make your video go global! 🌎🌍🌏
     """)
 
     # File uploader
-    video_file = st.file_uploader("Upload your video file", type=['mp4', 'avi', 'mov'])
+    video_file = st.file_uploader("📁 Upload your video file", type=['mp4', 'avi', 'mov'])
 
-    # Extended language selection
+    # Extended language selection with native names
     languages = [
-        'English', 'Turkish', 'Spanish', 'French', 'German', 'Italian', 'Portuguese', 'Russian', 'Japanese', 
-        'Chinese (Simplified)', 'Chinese (Traditional)', 'Korean', 'Arabic', 'Hindi', 'Bengali', 'Urdu', 
-        'Indonesian', 'Vietnamese', 'Thai', 'Dutch', 'Greek', 'Swedish', 'Norwegian', 'Danish', 'Finnish', 
-        'Polish', 'Ukrainian', 'Czech', 'Romanian', 'Hungarian', 'Bulgarian', 'Hebrew', 'Swahili', 'Malay',
-        'Filipino', 'Persian', 'Tamil', 'Telugu', 'Kannada', 'Malayalam', 'Marathi', 'Gujarati', 'Punjabi'
+        'English (English)', 'Türkçe (Turkish)', 'Español (Spanish)', 'Français (French)', 
+        'Deutsch (German)', 'Italiano (Italian)', 'Português (Portuguese)', 'Русский (Russian)', 
+        '日本語 (Japanese)', '简体中文 (Chinese Simplified)', '繁體中文 (Chinese Traditional)', 
+        '한국어 (Korean)', 'العربية (Arabic)', 'हिन्दी (Hindi)', 'বাংলা (Bengali)', 'اردو (Urdu)', 
+        'Bahasa Indonesia (Indonesian)', 'Tiếng Việt (Vietnamese)', 'ไทย (Thai)', 'Nederlands (Dutch)', 
+        'Ελληνικά (Greek)', 'Svenska (Swedish)', 'Norsk (Norwegian)', 'Dansk (Danish)', 'Suomi (Finnish)', 
+        'Polski (Polish)', 'Українська (Ukrainian)', 'Čeština (Czech)', 'Română (Romanian)', 
+        'Magyar (Hungarian)', 'Български (Bulgarian)', 'עברית (Hebrew)', 'Kiswahili (Swahili)', 
+        'Bahasa Melayu (Malay)', 'Filipino (Filipino)', 'فارسی (Persian)', 'தமிழ் (Tamil)', 
+        'తెలుగు (Telugu)', 'ಕನ್ನಡ (Kannada)', 'മലയാളം (Malayalam)', 'मराठी (Marathi)', 
+        'ગુજરાતી (Gujarati)', 'ਪੰਜਾਬੀ (Punjabi)'
     ]
-    selected_languages = st.multiselect("Select languages for translation", languages)
+    selected_languages = st.multiselect("🗣️ Select languages for translation", languages)
 
     if video_file and selected_languages:
-        if st.button("Process Video"):
+        if st.button("🚀 Process Video"):
             try:
-                with st.spinner("Processing video..."):
+                with st.spinner("🔧 Processing video... Please wait, magic takes time! ✨"):
                     # Save uploaded file
                     video_path = os.path.join("temp", video_file.name)
                     with open(video_path, "wb") as f:
@@ -89,32 +97,43 @@ def main():
                     audio_file = video_to_audio(video_path)
 
                     # Transcribe audio
-                    transcript = transcribe_audio(audio_file)
+                    segments = transcribe_audio(audio_file)
 
                     # Create original SRT file
                     original_srt = os.path.join("temp", "original.srt")
-                    create_srt(transcript, original_srt)
+                    create_srt(segments, original_srt)
 
                     # Display original transcript
-                    st.subheader("Original Transcript")
-                    st.text_area("", transcript, height=200)
+                    st.subheader("📜 Original Transcript")
+                    full_transcript = " ".join([segment['text'] for segment in segments])
+                    st.text_area("", full_transcript, height=200)
 
                     # Translate and create SRT for each selected language
                     for lang in selected_languages:
-                        translated_text = translate_text(transcript, lang)
-                        translated_srt = os.path.join("temp", f"{lang.lower().replace(' ', '_')}.srt")
-                        create_srt(translated_text, translated_srt)
+                        native_name = lang.split(' (')[0]
+                        english_name = lang.split(' (')[1][:-1]  # Remove the closing parenthesis
+                        translated_segments = []
+                        for segment in segments:
+                            translated_text = translate_text(segment['text'], english_name)
+                            translated_segments.append({
+                                'start': segment['start'],
+                                'end': segment['end'],
+                                'text': translated_text
+                            })
+                        translated_srt = os.path.join("temp", f"{english_name.lower().replace(' ', '_')}.srt")
+                        create_srt(translated_segments, translated_srt)
 
                         # Display translated transcript
-                        st.subheader(f"{lang} Translation")
-                        st.text_area("", translated_text, height=200)
+                        st.subheader(f"🌟 {native_name} Translation")
+                        full_translated_text = " ".join([segment['text'] for segment in translated_segments])
+                        st.text_area("", full_translated_text, height=200)
 
                         # Download button for translated SRT
                         with open(translated_srt, "rb") as file:
                             st.download_button(
-                                label=f"Download {lang} SRT",
+                                label=f"📥 Download {native_name} SRT",
                                 data=file,
-                                file_name=f"{lang.lower().replace(' ', '_')}.srt",
+                                file_name=f"{english_name.lower().replace(' ', '_')}.srt",
                                 mime="text/srt"
                             )
 
@@ -123,22 +142,23 @@ def main():
                     os.remove(audio_file)
                     os.remove(original_srt)
                     for lang in selected_languages:
-                        os.remove(os.path.join("temp", f"{lang.lower().replace(' ', '_')}.srt"))
+                        english_name = lang.split(' (')[1][:-1]
+                        os.remove(os.path.join("temp", f"{english_name.lower().replace(' ', '_')}.srt"))
 
             except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
-                st.error("Please make sure you have ffmpeg installed and the OpenAI API key is correct.")
+                st.error(f"🚨 An error occurred: {str(e)}")
+                st.error("🔧 Please make sure you have ffmpeg installed and the OpenAI API key is correct.")
 
     st.markdown("""
-    ### How to use:
-    1. Upload your video file using the file uploader above.
-    2. Select one or more languages for translation from the dropdown menu.
-    3. Click the "Process Video" button to start the translation process.
-    4. Wait for the processing to complete. This may take a few minutes depending on the video length.
-    5. Review the original transcript and translations in the text areas provided.
-    6. Download the SRT files for each language using the download buttons.
+    ### 🌈 How to use:
+    1. 📤 Upload your video file using the file uploader above.
+    2. 🌍 Select one or more languages for translation from the dropdown menu.
+    3. 🚀 Click the "Process Video" button to start the translation process.
+    4. ⏳ Wait for the processing to complete. This may take a few minutes depending on the video length.
+    5. 👀 Review the original transcript and translations in the text areas provided.
+    6. 💾 Download the SRT files for each language using the download buttons.
 
-    Note: This app uses advanced AI models (OpenAI's GPT-4) for transcription and translation, ensuring high-quality results across a wide range of languages.
+    📢 Note: This app uses advanced AI models (OpenAI's GPT-4) for transcription and translation, ensuring high-quality results across a wide range of languages. It's like having a polyglot genius at your fingertips! 🧠✨
     """)
 
 if __name__ == "__main__":
