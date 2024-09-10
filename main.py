@@ -1,12 +1,10 @@
 import streamlit as st
 import os
+import tempfile
 import subprocess
-import whisper
-import openai
-from pysrt import SubRipFile, SubRipItem, SubRipTime
 from openai import OpenAI
 from dotenv import load_dotenv
-from pydub import AudioSegment
+from pysrt import SubRipFile, SubRipItem, SubRipTime
 
 # Load environment variables
 load_dotenv()
@@ -17,80 +15,6 @@ client = OpenAI()
 # Ensure temp directory exists
 os.makedirs("temp", exist_ok=True)
 
-# Function to preprocess audio
-def preprocess_audio(audio_file):
-    audio = AudioSegment.from_wav(audio_file)
-    
-    # Normalize audio
-    audio = audio.normalize()
-    
-    # Apply noise reduction (this is a simple high-pass filter, you might want to use a more sophisticated method)
-    audio = audio.high_pass_filter(100)
-    
-    preprocessed_file = audio_file.replace('.wav', '_preprocessed.wav')
-    audio.export(preprocessed_file, format="wav")
-    return preprocessed_file
-
-# Function to convert video to audio
-def video_to_audio(video_file):
-    audio_file = os.path.splitext(video_file)[0] + '.wav'
-    command = f"ffmpeg -i \"{video_file}\" -acodec pcm_s16le -ar 16000 \"{audio_file}\""
-    subprocess.call(command, shell=True)
-    return audio_file
-
-# Function to transcribe audio using Whisper
-def transcribe_audio(audio_file):
-    model = whisper.load_model("base")
-    
-    # Load audio file
-    audio = AudioSegment.from_wav(audio_file)
-    
-    # Split audio into 30-second segments
-    segment_length = 30 * 1000  # 30 seconds in milliseconds
-    segments = []
-    for i in range(0, len(audio), segment_length):
-        segment = audio[i:i+segment_length]
-        segment_file = f"temp/segment_{i//segment_length}.wav"
-        segment.export(segment_file, format="wav")
-        segments.append(segment_file)
-    
-    # Transcribe each segment
-    transcribed_segments = []
-    for i, segment in enumerate(segments):
-        result = model.transcribe(segment)
-        for seg in result["segments"]:
-            seg["start"] += i * 30  # Adjust start time based on segment
-            seg["end"] += i * 30    # Adjust end time based on segment
-        transcribed_segments.extend(result["segments"])
-    
-    # Clean up temporary segment files
-    for segment in segments:
-        os.remove(segment)
-    
-    return transcribed_segments
-
-# Function to create SRT file
-def create_srt(segments, filename):
-    srt = SubRipFile()
-    for i, segment in enumerate(segments):
-        start = SubRipTime(seconds=segment['start'])
-        end = SubRipTime(seconds=segment['end'])
-        text = segment['text']
-        item = SubRipItem(i+1, start=start, end=end, text=text)
-        srt.append(item)
-    srt.save(filename)
-
-# Function to translate text using GPT-4
-def translate_text(text, target_lang):
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": f"You are an expert in translation who can translate any text to any desired language. Translate the following text to {target_lang}. Dont translate word by word but translate the whole sentence. Don't add your comments, just translate the text."},
-            {"role": "user", "content": text}
-        ]
-    )
-    return response.choices[0].message.content
-
 # Function to format timestamp
 def format_timestamp(seconds):
     m, s = divmod(int(seconds), 60)
@@ -98,24 +22,55 @@ def format_timestamp(seconds):
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 # Function to display timestamped text
-def display_timestamped_text(segments):
+def display_timestamped_text(srt_content):
     text = ""
-    for segment in segments:
-        start_time = format_timestamp(segment['start'])
-        end_time = format_timestamp(segment['end'])
-        text += f"[{start_time} - {end_time}] {segment['text']}\n\n"
+    for item in srt_content:
+        start_time = format_timestamp(item.start.seconds)
+        end_time = format_timestamp(item.end.seconds)
+        text += f"[{start_time} - {end_time}] {item.text}\n\n"
     return text
+
+# Function to save uploaded file temporarily
+def save_uploaded_file(uploaded_file):
+    if uploaded_file is not None:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            return tmp_file.name
+    return None
+
+# Function to convert video to audio
+def video_to_audio(video_file):
+    audio_file = os.path.splitext(video_file)[0] + '.wav'
+    command = f"ffmpeg -i \"{video_file}\" -acodec pcm_s16le -ar 16000 \"{audio_file}\" -y"
+    subprocess.call(command, shell=True)
+    return audio_file
+
+# Function to translate SRT content
+def translate_srt(srt_content, target_lang):
+    translated_srt = SubRipFile()
+    for index, item in enumerate(srt_content):
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a very helpful and talented translator who can translate all languages."},
+                {"role": "user", "content": f"Translate the following text to {target_lang}. Only provide the translation, no additional comments:\n{item.text}"}
+            ]
+        )
+        translated_text = response.choices[0].message.content.strip()
+        translated_item = SubRipItem(index + 1, item.start, item.end, translated_text)
+        translated_srt.append(translated_item)
+    return translated_srt
 
 # Streamlit app
 def main():
-    st.set_page_config(page_title="Video Translation App", layout="wide")
+    st.set_page_config(page_title="Multi-Language Video Translation App", layout="wide")
 
-    st.title("🎥🌐 Video Translation App")
+    st.title("🎥🌐 Multi-Language Video Translation App")
     st.markdown("""
-    Welcome to the Video Translation App! 🚀 This magical tool allows you to:
+    Welcome to the Multi-Language Video Translation App! 🚀 This magical tool allows you to:
     1. 📤 Upload a video file
-    2. 🌍 Choose languages for translation
-    3. 📝 Get transcriptions and translations in SRT format
+    2. 🌍 Choose multiple languages for translation
+    3. 📝 Get transcriptions and translations in SRT format for each selected language
     
     Simply follow the steps below to get started! Let's make your video go global! 🌎🌍🌏
     """)
@@ -144,87 +99,69 @@ def main():
             try:
                 with st.spinner("🔧 Processing video... Please wait, magic takes time! ✨"):
                     # Save uploaded file
-                    video_path = os.path.join("temp", video_file.name)
-                    with open(video_path, "wb") as f:
-                        f.write(video_file.getbuffer())
+                    temp_video_path = save_uploaded_file(video_file)
 
                     # Convert video to audio
-                    audio_file = video_to_audio(video_path)
-
-                    # Preprocess audio
-                    preprocessed_audio = preprocess_audio(audio_file)
+                    temp_audio_path = video_to_audio(temp_video_path)
 
                     # Transcribe audio
-                    segments = transcribe_audio(preprocessed_audio)
+                    with open(temp_audio_path, "rb") as audio_file:
+                        transcription = client.audio.transcriptions.create(
+                            model="whisper-1",
+                            file=audio_file,
+                            response_format="srt"
+                        )
 
-                    # Create original SRT file
-                    original_srt = os.path.join("temp", "original.srt")
-                    create_srt(segments, original_srt)
+                    # Parse the SRT content
+                    original_srt = SubRipFile.from_string(transcription)
 
                     # Display original transcript with timestamps and allow editing
                     st.subheader("📜 Original Transcript")
-                    edited_transcript = st.text_area("Edit the transcript if needed:", display_timestamped_text(segments), height=400)
+                    st.text_area("Edit the transcript if needed:", display_timestamped_text(original_srt), height=400, key="original_transcript")
 
-                    # Update segments with edited transcript
-                    edited_segments = []
-                    for segment, edited_line in zip(segments, edited_transcript.split('\n\n')):
-                        if edited_line.strip():
-                            time_range, text = edited_line.split(']')
-                            segment['text'] = text.strip()
-                            edited_segments.append(segment)
+                    # Translate transcription for each selected language
+                    for index, lang in enumerate(selected_languages):
+                        target_lang = lang.split(' (')[1][:-1]  # Extract English name
+                        native_name = lang.split(' (')[0]  # Extract native name
 
-                    # Translate and create SRT for each selected language
-                    for lang in selected_languages:
-                        native_name = lang.split(' (')[0]
-                        english_name = lang.split(' (')[1][:-1]  # Remove the closing parenthesis
-                        translated_segments = []
-                        for segment in edited_segments:
-                            translated_text = translate_text(segment['text'], english_name)
-                            translated_segments.append({
-                                'start': segment['start'],
-                                'end': segment['end'],
-                                'text': translated_text
-                            })
-                        translated_srt = os.path.join("temp", f"{english_name.lower().replace(' ', '_')}.srt")
-                        create_srt(translated_segments, translated_srt)
+                        with st.spinner(f"Translating to {native_name}... 🌟"):
+                            translated_srt = translate_srt(original_srt, target_lang)
 
-                        # Display translated transcript with timestamps
-                        st.subheader(f"🌟 {native_name} Translation")
-                        st.text_area("", display_timestamped_text(translated_segments), height=400)
+                            # Display translated transcript with timestamps
+                            st.subheader(f"🌟 {native_name} Translation")
+                            st.text_area("", display_timestamped_text(translated_srt), height=400, key=f"translated_text_{index}")
 
-                        # Download button for translated SRT
-                        with open(translated_srt, "rb") as file:
+                            # Prepare SRT content for download
+                            srt_content = '\n'.join(str(item) for item in translated_srt)
+
+                            # Download button for translated SRT
                             st.download_button(
                                 label=f"📥 Download {native_name} SRT",
-                                data=file,
-                                file_name=f"{english_name.lower().replace(' ', '_')}.srt",
-                                mime="text/srt"
+                                data=srt_content,
+                                file_name=f"{target_lang.lower().replace(' ', '_')}.srt",
+                                mime="text/srt",
+                                key=f"download_button_{index}"
                             )
 
                     # Clean up temporary files
-                    os.remove(video_path)
-                    os.remove(audio_file)
-                    os.remove(preprocessed_audio)
-                    os.remove(original_srt)
-                    for lang in selected_languages:
-                        english_name = lang.split(' (')[1][:-1]
-                        os.remove(os.path.join("temp", f"{english_name.lower().replace(' ', '_')}.srt"))
+                    os.unlink(temp_video_path)
+                    os.unlink(temp_audio_path)
 
             except Exception as e:
                 st.error(f"🚨 An error occurred: {str(e)}")
-                st.error("🔧 Please make sure you have ffmpeg installed and the OpenAI API key is correct.")
+                st.error("🔧 Please make sure you have ffmpeg installed and the OpenAI API key is set correctly in your environment variables.")
 
     st.markdown("""
     ### 🌈 How to use:
     1. 📤 Upload your video file using the file uploader above.
     2. 🌍 Select one or more languages for translation from the dropdown menu.
-    3. 🚀 Click the "Process Video" button to start the translation process.
-    4. ⏳ Wait for the processing to complete. This may take a few minutes depending on the video length.
+    3. 🚀 Click the "Process Video" button to start the transcription and translation process.
+    4. ⏳ Wait for the processing to complete. This may take a few minutes depending on the video length and the number of languages selected.
     5. 📝 Review and edit the original transcript if needed.
-    6. 👀 Review the translations in the text areas provided.
-    7. 💾 Download the SRT files for each language using the download buttons.
+    6. 👀 Review the translations in the text areas provided for each language.
+    7. 💾 Download the SRT files for the translated subtitles using the download buttons for each language.
 
-    📢 Note: This app uses advanced AI models for transcription and translation, ensuring high-quality results across a wide range of languages. It's like having a polyglot genius at your fingertips! 🧠✨
+    📢 Note: This app uses advanced AI models for transcription and translation, ensuring high-quality results across a wide range of languages. It's like having a team of polyglot geniuses at your fingertips! 🧠✨
     """)
 
 if __name__ == "__main__":

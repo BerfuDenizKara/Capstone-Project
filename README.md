@@ -4,7 +4,8 @@ This project uses ffmpeg package. To install this package follow the instruction
 
 To run the project on your local computer run these commands on your terminal at projects path
 
-1) pip install streamlit whisper openai pysrt
-2) pip install streamlit ffmpeg-python openai-whisper openai pysrt
-3) pip install pydub
+1) pip install streamlit
+2) pip install openai
+3) pip install python-dotenv
+4) pip install pysrt
 
